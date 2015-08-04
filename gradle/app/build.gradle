@@ -1,0 +1,241 @@
+apply from: '../variables.gradle'
+
+apply plugin: 'com.android.application'
+apply plugin: 'eclipse'
+
+// project Variables
+def Package = "io.cryptix.package"
+def MinSDK  = 8
+def TargetSDK = 22
+def BuildTools = "22.0.1"
+
+dependencies {
+    compile fileTree(dir: 'libs', include: ['*.jar'])
+    // Add Dependencies here.
+    
+}
+
+def isTravis = "true".equals(System.getenv("TRAVIS"))
+def preDexEnabled = "true".equals(System.getProperty("pre-dex", "true"))
+
+def getVersionCode = { ->
+    try {
+        def code = new ByteArrayOutputStream()
+        exec {
+            commandLine 'git', 'tag', '--list'
+            standardOutput = code
+        }
+        return code.toString().split("\n").size()
+    }
+    catch (ignored) {
+        return -1;
+    }
+}
+def getVersionName = { ->
+    try {
+        def stdout = new ByteArrayOutputStream()
+        exec {
+            commandLine 'git', 'describe', '--tags', '--dirty'
+            standardOutput = stdout
+        }
+        return stdout.toString().trim()
+    }
+    catch (ignored) {
+        return null;
+    }
+}
+
+android {
+    compileSdkVersion TargetSDK
+    buildToolsVersion BuildTools
+
+    defaultConfig {
+        applicationId Package
+        minSdkVersion MinSDK
+        targetSdkVersion TargetSDK
+        versionCode getVersionCode()
+        versionName getVersionName()
+    }
+    
+    
+    // Source Sets for Eclipse
+    sourceSets {
+    	main {
+    		manifest.srcFile 'AndroidManifest.xml'
+    		java.srcDirs = ['src/main/java']
+    		resources.srcDirs = ['src/main/java']
+    		aidl.srcDirs = ['src/main/java']
+            renderscript.srcDirs = ['src/main/java']
+            res.srcDirs = ['res']
+            assets.srcDirs = ['assets']
+    	}
+    	
+    	androidTest.setRoot('tests')
+        debug.setRoot('build-types/debug')
+        release.setRoot('build-types/release')
+    }
+    
+    dexOptions {
+    	preDexLibraries = preDexEnabled && !isTravis
+    }
+    
+    compileOptions {
+    	sourceCompatibility JavaVersion.VERSION_1_7
+    	targetCompatibility JavaVersion.VERSION_1_7
+    }
+    
+	// TODO: Create more buildTypes
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+eclipse.ext {
+	genDir = new File("${projectDir}/gen")
+	assetsDir = new File("${projectDir}/assets")
+	resDir = new File("${projectDir}/res")
+	srcDir = new File("${projectDir}/src/main/java")
+}
+
+eclipse.classpath.file {
+	withXml {
+		eclipse.genDir.mkdirs()
+		eclipse.assetsDir.mkdirs()
+		eclipse.resDir.mkdirs()
+		eclipse.srcDir.mkdirs()
+		
+		def props = new Properties()
+		def writer = new FileWriter(file('project.properties'))
+		try {
+			props.setProperty("target", "android-${TargetSDK}")
+			props.setProperty("sdk.buildtools", "${BuildTools}")
+			props.store(writer, null)
+			writer.flush()
+		} finally {
+			writer.close()
+		}
+	
+		def node = it.asNode()
+		node.appendNode('classpathentry kind="src" path="src/main/java"')
+		node.appendNode('classpathentry kind="src" path="gen"')
+		node.appendNode('classpathentry kind="src" path="res"')
+		node.appendNode('classpathentry kind="src" path="assets"')
+		
+		node.children().removeAll() { c ->
+			def path = c.attribute('path')
+			path != null && (
+					path.contains('/com.android.support/support-v4')
+					)
+		}
+	}
+	
+	beforeMerged { classpath ->
+		classpath.entries.removeAll() { c ->
+			c.kind == 'src'
+		}
+	}
+}
+
+eclipse.jdt {
+    sourceCompatibility = 1.7
+    targetCompatibility = 1.7
+}
+
+eclipse.project {
+	name = "${projectName}-${project.name}"
+	natures 'com.android.ide.eclipse.adt.AndroidNature'
+    buildCommand 'com.android.ide.eclipse.adt.ResourceManagerBuilder'
+    buildCommand 'com.android.ide.eclipse.adt.PreCompilerBuilder'
+    buildCommand 'com.android.ide.eclipse.adt.ApkBuilder'
+}
+
+task copyAars << {
+    configurations.compile.filter { it.name.endsWith 'aar' }.each { File file -> copyAndRenameAar(file) }
+	def aarsFolder = new File("${projectDir}/deps/aars/exploded")
+	if (aarsFolder.exists()) {
+		Properties props = new Properties()
+		def propsFile = new File("${projectDir}/project.properties")
+		props.load(propsFile.newDataInputStream())
+		
+		int count = 1
+		aarsFolder.eachDir() { dir ->
+			def parts = dir.getPath().split("\\\\")
+			props.setProperty("android.library.reference.${count}", "deps/aars/exploded/${parts[parts.size() -1]}")
+			count++
+		}
+		props.store(propsFile.newWriter(), null)
+	}
+}
+
+void copyAndRenameAar(File file) {
+    println 'Added aar ' + file
+    def baseFilename = file.name.lastIndexOf('.').with { it != -1 ? file.name[0..<it] : file.name }
+
+    // directory excluding the classes.jar
+    copy {
+        from zipTree(file)
+        exclude 'classes.jar'
+        into "deps/aars/exploded/" + baseFilename
+    }
+
+    // Copies the classes.jar into the libs directory of the expoded AAR.
+    // In Eclipse you can then import this exploded aar as an Android project
+    // and then reference not only the classes but also the android resources
+    copy {
+        from zipTree(file)
+        include 'classes.jar'
+        into "deps/aars/exploded/" + baseFilename + "/libs"
+        rename { String fileName -> fileName.replace('classes.jar', baseFilename + '.jar') }
+    }
+}
+
+task copyEclipseClasspath << {
+    def classpath = new XmlParser().parse(file(".classpath"))
+    def libs = classpath.grep { it.'@gradle-dependency' == "true" }
+    libs.each { classpath.remove(it) }
+
+    configurations.compile.filter { it.name.endsWith 'jar' }
+    .collect { file ->
+        new Node(null, "classpathentry", [
+            "path": file.toString(),
+            "kind": "lib",
+            "exported": "true",
+            "gradle-dependency": "true"
+        ])
+    }
+    .each { classpath.append(it) }
+
+    file(".classpath").withWriter { writer ->
+        writer << new groovy.xml.StreamingMarkupBuilder().bind { mkp.xmlDeclaration() }
+        def printer = new XmlNodePrinter(new PrintWriter(writer))
+        printer.print(classpath)
+    }
+}
+
+task refreshBuild << {
+	Properties props = new Properties()
+	def propsFile = new File("${projectDir}/project.properties")
+	props.load(propsFile.newDataInputStream())
+	props.setProperty("target", "android-${TargetSDK}")
+	props.setProperty("sdk.buildtools", "${BuildTools}")
+	props.store(propsFile.newWriter(), null)
+}
+
+task cleanEclipseGradle << {
+	def binsDir = new File("${projectDir}/bin")
+	def depsDir = new File("${projectDir}/deps")
+	def genDir  = new File("${projectDir}/gen")
+	def projectProps = new File("${projectDir}/project.properties")
+	binsDir.deleteDir()
+	depsDir.deleteDir()
+	genDir.deleteDir()
+	projectProps.delete()
+}
+
+task genEclipse(dependsOn: ['eclipse', 'copyAars', 'copyEclipseClasspath'])
+copyAars.mustRunAfter tasks.eclipse
+copyEclipseClasspath.mustRunAfter copyAars
+cleanEclipse.dependsOn cleanEclipseGradle

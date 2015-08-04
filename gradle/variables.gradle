@@ -1,0 +1,4 @@
+// Project Name for eclipse project explorer
+ext.projectName = "App Name goes Here"
+
+// For individual project's variables look in their personal build files.

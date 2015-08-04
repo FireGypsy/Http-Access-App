@@ -1,0 +1,30 @@
+apply from: 'variables.gradle'
+// Wrapper Updater
+task wrapper(type: Wrapper) {
+    gradleVersion = '2.4'
+}
+
+buildscript {
+    repositories {
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:1.1.0'
+    }
+}
+
+allprojects {
+    repositories {
+		def androidHome = System.getenv("ANDROID_HOME")
+        mavenCentral()
+		maven {
+			url "$androidHome/extras/android/m2repository/"
+		}
+		
+    }
+}
+
+apply plugin: 'eclipse'
+eclipse.project {
+	name = projectName
+}
